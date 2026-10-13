@@ -181,7 +181,7 @@ module github.com/slaghuis/myservice/pipeline
 
 go 1.23
 
-require github.com/slaghuis/pipeline-lib v0.0.0
+require github.com/slaghuis/pipeline-lib
 
 // During development, point at local pipeline-lib:
 replace github.com/slaghuis/pipeline-lib => ../../../ai-factory/pipeline-lib
