@@ -13,8 +13,8 @@ import (
 	"github.com/slaghuis/pipeline-lib/report"
 )
 
-func Test(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagger.Directory) report.StageResult {
-	r := report.NewStage("test")
+func Test(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagger.Directory) (r report.StageResult) {
+	r = report.NewStage("test")
 	defer r.Finish()
 
 	args := []string{"go", "test", "-timeout", cfg.Test.Timeout, "-count=1"}

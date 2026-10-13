@@ -45,13 +45,19 @@ func (c *Client) RequestApproval(ctx context.Context, prompt, contextStr, taskTa
 	options []string, timeoutS int) (string, error) {
 
 	id := uuid.NewString()[:8]
-	body, _ := json.Marshal(approvalReq{
+	body, err := json.Marshal(approvalReq{
 		Prompt: prompt, Context: contextStr,
 		Options: options, TaskTag: fmt.Sprintf("%s/%s", taskTag, id),
 		TimeoutSeconds: timeoutS,
 	})
-	req, _ := http.NewRequestWithContext(ctx, "POST",
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST",
 		c.BaseURL+"/pipeline/approve", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	// Wait a maximum of timeout+30s
@@ -63,14 +69,20 @@ func (c *Client) RequestApproval(ctx context.Context, prompt, contextStr, taskTa
 		return "", err
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
 
 	var ar approvalResp
 	if err := json.Unmarshal(b, &ar); err != nil {
-		return "", fmt.Errorf("decode: %w (body=%s)", err, string(b))
+		return "", fmt.Errorf("decode: %w (status=%d body=%s)", err, resp.StatusCode, string(b))
 	}
 	if ar.Error != "" {
 		return "", fmt.Errorf("%s", ar.Error)
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("approve: HTTP %d", resp.StatusCode)
 	}
 	if ar.Status != "answered" {
 		return "", fmt.Errorf("approval not granted: %s", ar.Status)
@@ -84,9 +96,15 @@ type notifyReq struct {
 }
 
 func (c *Client) Notify(ctx context.Context, message, taskTag string) error {
-	body, _ := json.Marshal(notifyReq{Message: message, TaskTag: taskTag})
-	req, _ := http.NewRequestWithContext(ctx, "POST",
+	body, err := json.Marshal(notifyReq{Message: message, TaskTag: taskTag})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST",
 		c.BaseURL+"/pipeline/notify", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	cl := *c.HTTP
 	cl.Timeout = 10 * time.Second
@@ -94,6 +112,9 @@ func (c *Client) Notify(ctx context.Context, message, taskTag string) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("notify: HTTP %d", resp.StatusCode)
+	}
 	return nil
 }

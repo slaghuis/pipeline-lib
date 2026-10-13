@@ -22,14 +22,24 @@ type DeployInput struct {
 }
 
 func Deploy(ctx context.Context, dag *dagger.Client, cfg *config.Config,
-	src *dagger.Directory, in DeployInput) report.StageResult {
+	src *dagger.Directory, in DeployInput) (r report.StageResult) {
 
-	r := report.NewStage("deploy:" + in.Env)
+	r = report.NewStage("deploy:" + in.Env)
 	defer r.Finish()
 
 	env, ok := cfg.Deploy.Environments[in.Env]
 	if !ok {
 		r.Fail(fmt.Errorf("unknown environment %q", in.Env))
+		return r
+	}
+	if env.KubeContext == "" {
+		env.KubeContext = cfg.Deploy.KubeContext
+	}
+	if env.Namespace == "" {
+		env.Namespace = cfg.Deploy.Namespace
+	}
+	if strings.HasPrefix(in.ImageRef, "local://") {
+		r.Fail(fmt.Errorf("image %s was not pushed; set build.registry to deploy", in.ImageRef))
 		return r
 	}
 
@@ -79,11 +89,6 @@ func Deploy(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 	r.Output = out
 	if err != nil {
 		r.Fail(fmt.Errorf("kubectl: %w", err))
-		if in.Approvers != nil && cfg.Notify.OnFailure {
-			_ = in.Approvers.Notify(ctx,
-				fmt.Sprintf("❌ Deploy %s to %s FAILED: %v", in.Version, in.Env, err),
-				cfg.Service)
-		}
 		return r
 	}
 

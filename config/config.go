@@ -1,17 +1,20 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Service     string   `yaml:"service"`
-	MainPackage string   `yaml:"main_package"`
-	GoVersion   string   `yaml:"go_version"`
+	Service     string `yaml:"service"`
+	MainPackage string `yaml:"main_package"`
+	GoVersion   string `yaml:"go_version"`
 
 	Lint struct {
 		GolangCILintVersion string   `yaml:"golangci_lint_version"`
@@ -29,36 +32,36 @@ type Config struct {
 	} `yaml:"test"`
 
 	Scan struct {
-		Govulncheck bool `yaml:"govulncheck"`
-		Trivy       bool `yaml:"trivy"`
+		Govulncheck bool   `yaml:"govulncheck"`
+		Trivy       bool   `yaml:"trivy"`
 		FailOn      string `yaml:"fail_on"` // "critical" | "high" | "medium"
 	} `yaml:"scan"`
 
 	Build struct {
-		Image       string            `yaml:"image"`
-		Registry    string            `yaml:"registry"`
-		Platforms   []string          `yaml:"platforms"`
-		LDFlags     string            `yaml:"ldflags"`
-		BuildArgs   map[string]string `yaml:"build_args"`
+		Image     string            `yaml:"image"`
+		Registry  string            `yaml:"registry"`
+		Platforms []string          `yaml:"platforms"`
+		LDFlags   string            `yaml:"ldflags"`
+		BuildArgs map[string]string `yaml:"build_args"`
 	} `yaml:"build"`
 
 	Integration struct {
-		Enabled      bool     `yaml:"enabled"`
-		ComposeFile  string   `yaml:"compose_file"`
-		TestCommand  string   `yaml:"test_command"`
+		Enabled     bool   `yaml:"enabled"`
+		ComposeFile string `yaml:"compose_file"`
+		TestCommand string `yaml:"test_command"`
 	} `yaml:"integration"`
 
 	Deploy struct {
-		KubeContext string            `yaml:"kube_context"`
-		Namespace   string            `yaml:"namespace"`
-		Manifests   string            `yaml:"manifests"`
-		Environments map[string]Env   `yaml:"environments"`
+		KubeContext  string         `yaml:"kube_context"`
+		Namespace    string         `yaml:"namespace"`
+		Manifests    string         `yaml:"manifests"`
+		Environments map[string]Env `yaml:"environments"`
 	} `yaml:"deploy"`
 
 	Approval struct {
-		TelegramMCPURL string `yaml:"telegram_mcp_url"`
+		TelegramMCPURL string   `yaml:"telegram_mcp_url"`
 		RequiredFor    []string `yaml:"required_for"` // ["staging","production"]
-		TimeoutSeconds int    `yaml:"timeout_seconds"`
+		TimeoutSeconds int      `yaml:"timeout_seconds"`
 	} `yaml:"approval"`
 
 	Notify struct {
@@ -68,10 +71,10 @@ type Config struct {
 }
 
 type Env struct {
-	KubeContext string            `yaml:"kube_context"`
-	Namespace   string            `yaml:"namespace"`
-	ValuesFile  string            `yaml:"values_file"`
-	ExtraArgs   []string          `yaml:"extra_args"`
+	KubeContext string   `yaml:"kube_context"`
+	Namespace   string   `yaml:"namespace"`
+	ValuesFile  string   `yaml:"values_file"`
+	ExtraArgs   []string `yaml:"extra_args"`
 }
 
 func Load(path string) (*Config, error) {
@@ -87,6 +90,9 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, err
 	}
+	if c.Service == "" {
+		return nil, fmt.Errorf("%s: service is required", path)
+	}
 	applyDefaults(&c)
 	// env expansion
 	c.Approval.TelegramMCPURL = os.ExpandEnv(c.Approval.TelegramMCPURL)
@@ -95,14 +101,11 @@ func Load(path string) (*Config, error) {
 }
 
 func applyDefaults(c *Config) {
-	if c.GoVersion == "" {
-		c.GoVersion = "1.23"
-	}
 	if c.MainPackage == "" {
 		c.MainPackage = "."
 	}
 	if c.Lint.GolangCILintVersion == "" {
-		c.Lint.GolangCILintVersion = "v1.61.0"
+		c.Lint.GolangCILintVersion = "v2.5.0"
 	}
 	if c.Lint.Timeout == "" {
 		c.Lint.Timeout = "5m"
@@ -119,6 +122,61 @@ func applyDefaults(c *Config) {
 	if len(c.Build.Platforms) == 0 {
 		c.Build.Platforms = []string{"linux/amd64", "linux/arm64"}
 	}
+	if c.Build.Image == "" {
+		c.Build.Image = c.Service
+	}
+	if c.Integration.TestCommand == "" {
+		c.Integration.TestCommand = "go test -tags integration ./..."
+	}
+}
+
+const defaultGoVersion = "1.23"
+
+var goDirective = regexp.MustCompile(`(?m)^go\s+(\d+)\.(\d+)`)
+
+// ResolveGoVersion raises GoVersion to the major.minor required by the go.mod in
+// root. The official golang images set GOTOOLCHAIN=local, so an older image
+// cannot download the toolchain the module asks for and every stage fails.
+// It returns the configured version when it had to be raised, "" otherwise.
+func (c *Config) ResolveGoVersion(root string) (raisedFrom string, err error) {
+	configured := c.GoVersion
+	if c.GoVersion == "" {
+		c.GoVersion = defaultGoVersion
+	}
+	b, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return "", err
+	}
+	m := goDirective.FindSubmatch(b)
+	if m == nil {
+		return "", nil
+	}
+	required := string(m[1]) + "." + string(m[2])
+	if configured == "" || versionLess(configured, required) {
+		c.GoVersion = required
+		if configured != "" {
+			return configured, nil
+		}
+	}
+	return "", nil
+}
+
+// versionLess compares the major.minor parts of two Go versions.
+func versionLess(a, b string) bool {
+	pa, pb := majorMinor(a), majorMinor(b)
+	if pa[0] != pb[0] {
+		return pa[0] < pb[0]
+	}
+	return pa[1] < pb[1]
+}
+
+func majorMinor(v string) [2]int {
+	var out [2]int
+	parts := strings.SplitN(strings.TrimPrefix(v, "go"), ".", 3)
+	for i := 0; i < 2 && i < len(parts); i++ {
+		out[i], _ = strconv.Atoi(parts[i])
+	}
+	return out
 }
 
 func (e Env) IsSet() bool {

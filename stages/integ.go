@@ -2,7 +2,6 @@ package stages
 
 //Dagger's service bindings are magic here — Postgres is spun up for the test, torn down after, and never pollutes your host. Same mechanism works for any dependency (Redis, Kafka, etc.).
 
-
 import (
 	"context"
 	"fmt"
@@ -15,13 +14,18 @@ import (
 )
 
 func Integration(ctx context.Context, dag *dagger.Client, cfg *config.Config,
-	src *dagger.Directory) report.StageResult {
+	src *dagger.Directory) (r report.StageResult) {
 
-	r := report.NewStage("integration")
+	r = report.NewStage("integration")
 	defer r.Finish()
 
 	if !cfg.Integration.Enabled {
 		r.Skipped = true
+		return r
+	}
+	cmd := strings.Fields(cfg.Integration.TestCommand)
+	if len(cmd) == 0 {
+		r.Fail(fmt.Errorf("integration.test_command is empty"))
 		return r
 	}
 
@@ -31,7 +35,6 @@ func Integration(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 		WithExposedPort(5432).
 		AsService()
 
-	cmd := strings.Fields(cfg.Integration.TestCommand)
 	runner := Base(ctx, dag, cfg, src).
 		WithServiceBinding("db", postgres).
 		WithEnvVariable("DATABASE_URL",

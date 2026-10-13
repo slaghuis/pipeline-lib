@@ -10,8 +10,8 @@ import (
 	"github.com/slaghuis/pipeline-lib/report"
 )
 
-func Lint(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagger.Directory) report.StageResult {
-	r := report.NewStage("lint")
+func Lint(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagger.Directory) (r report.StageResult) {
+	r = report.NewStage("lint")
 	defer r.Finish()
 
 	if !cfg.Lint.Enabled {

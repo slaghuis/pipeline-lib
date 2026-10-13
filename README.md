@@ -194,7 +194,7 @@ package main
 
 import (
     "os"
-    "github.com/you/pipeline-lib/cli"
+    "github.com/slaghuis/pipeline-lib/cli"
 )
 
 func main() {
@@ -210,21 +210,27 @@ package main
 
 import (
     "context"
-    "github.com/you/pipeline-lib/cli"
-    "github.com/you/pipeline-lib/stages"
+    "os"
+
     "dagger.io/dagger"
+    "github.com/slaghuis/pipeline-lib/cli"
 )
 
 func main() {
-    cli.RegisterHook("pre-build", func(ctx context.Context, dag *dagger.Client, src *dagger.Directory) error {
-        _, err := stages.Base(ctx, dag, cfg, src).
+    // Hooks receive the source directory and may return a modified one,
+    // which is then used by the stage and every stage after it.
+    cli.RegisterHook("pre-build", func(ctx context.Context, dag *dagger.Client, src *dagger.Directory) (*dagger.Directory, error) {
+        gen := dag.Container().From("golang:1.23-alpine").
+            WithMountedDirectory("/src", src).
+            WithWorkdir("/src").
             WithExec([]string{"go", "generate", "./..."}).
-            Sync(ctx)
-        return err
+            Directory("/src")
+        return gen, nil
     })
     os.Exit(cli.Run(os.Args[1:]))
 }
 ```
+Hook points are `pre-<stage>` and `post-<stage>` for `lint`, `test`, `scan`, `build`, `integ` and `deploy`. They fire whenever that stage runs, including inside `full` and `release`.
 ### Part 4 `services/myservice/pipeline.yaml`
 ```
 service: myservice

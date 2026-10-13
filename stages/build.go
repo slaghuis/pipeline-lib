@@ -19,18 +19,27 @@ type BuildResult struct {
 }
 
 func Build(ctx context.Context, dag *dagger.Client, cfg *config.Config,
-	src *dagger.Directory, version string) BuildResult {
+	src *dagger.Directory, version string) (br BuildResult) {
 
-	br := BuildResult{StageResult: report.NewStage("build")}
+	br = BuildResult{StageResult: report.NewStage("build")}
 	defer br.Finish()
 
-	ldflags := cfg.Build.LDFlags + fmt.Sprintf(" -X main.version=%s -X main.builtAt=%s",
-		version, time.Now().UTC().Format(time.RFC3339))
+	ldflags := strings.TrimSpace(cfg.Build.LDFlags + fmt.Sprintf(" -X main.version=%s -X main.builtAt=%s",
+		version, time.Now().UTC().Format(time.RFC3339)))
 
-	// Build for host arch; CI/registry publish does multi-arch separately.
+	// Build for the engine's platform so the binary matches the runtime image;
+	// CI/registry publish does multi-arch separately.
+	platform, err := dag.DefaultPlatform(ctx)
+	if err != nil {
+		br.Fail(fmt.Errorf("default platform: %w", err))
+		return br
+	}
+	goos, goarch, _ := strings.Cut(string(platform), "/")
+	goarch, _, _ = strings.Cut(goarch, "/")
+
 	bin := Base(ctx, dag, cfg, src).
-		WithEnvVariable("GOOS", "linux").
-		WithEnvVariable("GOARCH", "arm64").
+		WithEnvVariable("GOOS", goos).
+		WithEnvVariable("GOARCH", goarch).
 		WithExec([]string{
 			"go", "build",
 			"-trimpath",

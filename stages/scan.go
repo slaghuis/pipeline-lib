@@ -10,8 +10,8 @@ import (
 	"github.com/slaghuis/pipeline-lib/report"
 )
 
-func Scan(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagger.Directory) report.StageResult {
-	r := report.NewStage("scan")
+func Scan(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagger.Directory) (r report.StageResult) {
+	r = report.NewStage("scan")
 	defer r.Finish()
 
 	if cfg.Scan.Govulncheck {

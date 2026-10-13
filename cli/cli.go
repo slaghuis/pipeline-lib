@@ -26,26 +26,48 @@ type Options struct {
 }
 
 func DefaultOptions() *Options {
-	return &Options{Hooks: hooks.NewRegistry()}
+	return &Options{Hooks: defaultHooks}
+}
+
+var defaultHooks = hooks.NewRegistry()
+
+// RegisterHook adds a hook to the registry used when Run is called without Options.
+// Hook names are "pre-<stage>" and "post-<stage>" where stage is one of
+// lint, test, scan, build, integ, deploy.
+func RegisterHook(name string, fn hooks.HookFn) {
+	defaultHooks.Register(name, fn)
+}
+
+var commands = map[string]bool{
+	"lint": true, "test": true, "scan": true, "build": true,
+	"integ": true, "full": true, "release": true,
 }
 
 // Run is the standard entry point. Call from each service's main().
-func Run(args []string, opts *Options) int {
-	if opts == nil {
-		opts = DefaultOptions()
+func Run(args []string, opts ...*Options) int {
+	o := DefaultOptions()
+	if len(opts) > 0 && opts[0] != nil {
+		o = opts[0]
 	}
 	if len(args) < 1 {
 		usage()
 		return 2
 	}
 	cmd := args[0]
+	if !commands[cmd] {
+		usage()
+		if cmd == "help" || cmd == "-h" || cmd == "--help" {
+			return 0
+		}
+		return 2
+	}
 
 	fs := flag.NewFlagSet("pipeline", flag.ContinueOnError)
 	cfgPath := fs.String("config", "pipeline.yaml", "path to pipeline.yaml")
 	root := fs.String("root", ".", "project root")
 	version := fs.String("version", "", "release version (default: git describe)")
 	env := fs.String("env", "staging", "deploy environment")
-	changeLog := fs.String("changelog", "", "changelog text for approvals")
+	changeLog := fs.String("changelog", "", "changelog text (or path to a file) for approvals")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -58,9 +80,24 @@ func Run(args []string, opts *Options) int {
 		return 1
 	}
 
-	rootAbs, _ := filepath.Abs(*root)
+	rootAbs, err := filepath.Abs(*root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "root: %v\n", err)
+		return 1
+	}
+	if raisedFrom, err := cfg.ResolveGoVersion(rootAbs); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: go version: %v; using go_version %s\n", err, cfg.GoVersion)
+	} else if raisedFrom != "" {
+		fmt.Fprintf(os.Stderr, "warning: go_version %s is older than go.mod requires; using %s\n",
+			raisedFrom, cfg.GoVersion)
+	}
 	if *version == "" {
 		*version = gitDescribe(rootAbs)
+	}
+	if *changeLog != "" {
+		if b, err := os.ReadFile(*changeLog); err == nil {
+			*changeLog = string(b)
+		}
 	}
 
 	dag, err := dagger.Connect(ctx, dagger.WithLogOutput(os.Stderr))
@@ -87,73 +124,80 @@ func Run(args []string, opts *Options) int {
 		rep.Emit()
 	}()
 
-	// run pre-* hooks
-	if src2, err := opts.Hooks.Run(ctx, "pre-"+cmd, dag, src); err != nil {
-		s := report.NewStage("hooks:pre-" + cmd)
-		s.Fail(err)
-		s.Finish()
-		rep.Stages = append(rep.Stages, s)
-		return 1
-	} else {
-		src = src2
+	hook := func(name string) bool {
+		next, err := o.Hooks.Run(ctx, name, dag, src)
+		if err != nil {
+			s := report.NewStage("hooks:" + name)
+			s.Fail(err)
+			s.Finish()
+			rep.Stages = append(rep.Stages, s)
+			return false
+		}
+		src = next
+		return true
+	}
+
+	// stage runs pre-/post- hooks around fn; fn must read src lazily so it
+	// sees any directory returned by the pre-hook.
+	stage := func(name string, fn func() report.StageResult) bool {
+		if !hook("pre-" + name) {
+			return false
+		}
+		res := fn()
+		rep.Stages = append(rep.Stages, res)
+		if !res.OK() {
+			return false
+		}
+		return hook("post-" + name)
+	}
+
+	var br stages.BuildResult
+	lint := func() bool {
+		return stage("lint", func() report.StageResult { return stages.Lint(ctx, dag, cfg, src) })
+	}
+	test := func() bool {
+		return stage("test", func() report.StageResult { return stages.Test(ctx, dag, cfg, src) })
+	}
+	scan := func() bool {
+		return stage("scan", func() report.StageResult { return stages.Scan(ctx, dag, cfg, src) })
+	}
+	build := func() bool {
+		return stage("build", func() report.StageResult {
+			br = stages.Build(ctx, dag, cfg, src, *version)
+			return br.StageResult
+		})
+	}
+	integ := func() bool {
+		return stage("integ", func() report.StageResult { return stages.Integration(ctx, dag, cfg, src) })
+	}
+	deploy := func() bool {
+		return stage("deploy", func() report.StageResult {
+			return stages.Deploy(ctx, dag, cfg, src, stages.DeployInput{
+				Env: *env, ImageRef: br.ImageRef, Version: *version,
+				ChangeLog: *changeLog, Approvers: tg,
+			})
+		})
 	}
 
 	switch cmd {
 	case "lint":
-		rep.Stages = append(rep.Stages, stages.Lint(ctx, dag, cfg, src))
+		lint()
 	case "test":
-		rep.Stages = append(rep.Stages, stages.Test(ctx, dag, cfg, src))
+		test()
 	case "scan":
-		rep.Stages = append(rep.Stages, stages.Scan(ctx, dag, cfg, src))
+		scan()
 	case "build":
-		br := stages.Build(ctx, dag, cfg, src, *version)
-		rep.Stages = append(rep.Stages, br.StageResult)
+		build()
 	case "integ":
-		rep.Stages = append(rep.Stages, stages.Integration(ctx, dag, cfg, src))
+		integ()
 	case "full":
-		rep.Stages = append(rep.Stages, stages.Lint(ctx, dag, cfg, src))
-		if !lastOK(rep) {
-			notifyFail(ctx, tg, cfg, rep)
-			break
-		}
-		rep.Stages = append(rep.Stages, stages.Test(ctx, dag, cfg, src))
-		if !lastOK(rep) {
-			notifyFail(ctx, tg, cfg, rep)
-			break
-		}
-		rep.Stages = append(rep.Stages, stages.Scan(ctx, dag, cfg, src))
-		if !lastOK(rep) {
-			notifyFail(ctx, tg, cfg, rep)
-			break
-		}
-		br := stages.Build(ctx, dag, cfg, src, *version)
-		rep.Stages = append(rep.Stages, br.StageResult)
-		if !br.Success {
+		if !(lint() && test() && scan() && build()) {
 			notifyFail(ctx, tg, cfg, rep)
 		}
 	case "release":
-		rep.Stages = append(rep.Stages,
-			stages.Lint(ctx, dag, cfg, src),
-			stages.Test(ctx, dag, cfg, src),
-			stages.Scan(ctx, dag, cfg, src),
-		)
-		if !report.AllSuccess(rep.Stages) {
+		if !(lint() && test() && scan() && build() && deploy()) {
 			notifyFail(ctx, tg, cfg, rep)
-			break
 		}
-		br := stages.Build(ctx, dag, cfg, src, *version)
-		rep.Stages = append(rep.Stages, br.StageResult)
-		if !br.Success {
-			notifyFail(ctx, tg, cfg, rep)
-			break
-		}
-		rep.Stages = append(rep.Stages, stages.Deploy(ctx, dag, cfg, src, stages.DeployInput{
-			Env: *env, ImageRef: br.ImageRef, Version: *version,
-			ChangeLog: *changeLog, Approvers: tg,
-		}))
-	default:
-		usage()
-		return 2
 	}
 
 	if !report.AllSuccess(rep.Stages) {
@@ -162,26 +206,19 @@ func Run(args []string, opts *Options) int {
 	return 0
 }
 
-func lastOK(r *report.Report) bool {
-	if len(r.Stages) == 0 {
-		return true
-	}
-	s := r.Stages[len(r.Stages)-1]
-	return s.Success || s.Skipped
-}
-
 func notifyFail(ctx context.Context, tg *telegram.Client, cfg *config.Config, rep *report.Report) {
 	if tg == nil || !cfg.Notify.OnFailure {
 		return
 	}
 	var failed []string
 	for _, s := range rep.Stages {
-		if !s.Success && !s.Skipped {
-			failed = append(failed, s.Name)
+		if !s.OK() {
+			failed = append(failed, fmt.Sprintf("%s (%s)", s.Name, s.Error))
 		}
 	}
 	_ = tg.Notify(ctx,
-		fmt.Sprintf("❌ Pipeline '%s' failed at: %s", rep.Pipeline, strings.Join(failed, ", ")),
+		fmt.Sprintf("❌ Pipeline '%s' %s@%s failed at: %s",
+			rep.Pipeline, rep.Service, rep.Version, strings.Join(failed, ", ")),
 		cfg.Service)
 }
 
@@ -214,6 +251,5 @@ flags:
   -root      project root (default: .)
   -env       deploy environment: staging | production
   -version   override version (default: git describe)
-  -changelog path or inline changelog text for approvals
-`)
+  -changelog path or inline changelog text for approvals`)
 }

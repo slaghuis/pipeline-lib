@@ -8,14 +8,14 @@ import (
 )
 
 type StageResult struct {
-	Name     string                 `json:"name"`
-	Success  bool                   `json:"success"`
-	Skipped  bool                   `json:"skipped"`
-	Error    string                 `json:"error,omitempty"`
-	Output   string                 `json:"output,omitempty"`
-	Metrics  map[string]any         `json:"metrics,omitempty"`
-	StartedAt time.Time             `json:"started_at"`
-	DurationS float64               `json:"duration_s"`
+	Name      string         `json:"name"`
+	Success   bool           `json:"success"`
+	Skipped   bool           `json:"skipped"`
+	Error     string         `json:"error,omitempty"`
+	Output    string         `json:"output,omitempty"`
+	Metrics   map[string]any `json:"metrics,omitempty"`
+	StartedAt time.Time      `json:"started_at"`
+	DurationS float64        `json:"duration_s"`
 
 	errObj error
 }
@@ -26,32 +26,47 @@ func (r *StageResult) Fail(err error) {
 }
 
 func (r *StageResult) Finish() {
-	r.Success = r.errObj == nil && !r.Skipped
-	r.DurationS = time.Since(r.StartedAt).Seconds()
 	if r.StartedAt.IsZero() {
 		r.StartedAt = time.Now()
-		r.DurationS = 0
 	}
+	r.Success = r.errObj == nil && !r.Skipped
+	r.DurationS = time.Since(r.StartedAt).Seconds()
+}
+
+// OK reports whether the stage passed or was intentionally skipped.
+func (r StageResult) OK() bool {
+	return r.Success || r.Skipped
 }
 
 type Report struct {
-	Pipeline  string         `json:"pipeline"`
-	Version   string         `json:"version"`
-	StartedAt time.Time      `json:"started_at"`
-	DurationS float64        `json:"duration_s"`
-	Success   bool           `json:"success"`
-	Stages    []StageResult  `json:"stages"`
+	Pipeline  string        `json:"pipeline"`
+	Service   string        `json:"service"`
+	Version   string        `json:"version"`
+	StartedAt time.Time     `json:"started_at"`
+	DurationS float64       `json:"duration_s"`
+	Success   bool          `json:"success"`
+	Stages    []StageResult `json:"stages"`
 }
 
 func NewStage(name string) StageResult {
 	return StageResult{Name: name, StartedAt: time.Now()}
 }
 
-// Print writes a human-readable summary to stderr and a JSON doc to stdout
+// AllSuccess reports whether every stage passed or was skipped.
+func AllSuccess(stages []StageResult) bool {
+	for _, s := range stages {
+		if !s.OK() {
+			return false
+		}
+	}
+	return true
+}
+
+// Emit writes a human-readable summary to stderr and a JSON doc to stdout
 // (so agents can parse stdout cleanly).
-func (r *Report) Print() {
+func (r *Report) Emit() {
 	// Human summary on stderr
-	fmt.Fprintf(os.Stderr, "\n==== Pipeline %s (%.1fs) ====\n", r.Pipeline, r.DurationS)
+	fmt.Fprintf(os.Stderr, "\n==== Pipeline %s %s@%s (%.1fs) ====\n", r.Pipeline, r.Service, r.Version, r.DurationS)
 	for _, s := range r.Stages {
 		status := "✓"
 		switch {

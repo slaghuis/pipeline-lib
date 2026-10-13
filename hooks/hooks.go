@@ -21,10 +21,16 @@ func NewRegistry() *Registry {
 }
 
 func (r *Registry) Register(name string, fn HookFn) {
+	if r.fns == nil {
+		r.fns = make(map[string][]HookFn)
+	}
 	r.fns[name] = append(r.fns[name], fn)
 }
 
 func (r *Registry) Run(ctx context.Context, name string, dag *dagger.Client, src *dagger.Directory) (*dagger.Directory, error) {
+	if r == nil {
+		return src, nil
+	}
 	for _, fn := range r.fns[name] {
 		next, err := fn(ctx, dag, src)
 		if err != nil {
