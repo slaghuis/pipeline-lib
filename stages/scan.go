@@ -2,7 +2,7 @@ package stages
 
 import (
 	"context"
-	"fmt"
+	"strings"
 
 	"dagger.io/dagger"
 
@@ -15,14 +15,18 @@ func Scan(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagg
 	defer r.Finish()
 
 	if cfg.Scan.Govulncheck {
+		// govulncheck@latest may need a newer Go than the service targets, so
+		// let the install fetch its own toolchain; the scan itself still runs
+		// with the service's Go version.
 		c := Base(ctx, dag, cfg, src).
+			WithEnvVariable("GOTOOLCHAIN", "auto").
 			WithExec([]string{"go", "install", "golang.org/x/vuln/cmd/govulncheck@latest"}).
+			WithEnvVariable("GOTOOLCHAIN", "local").
 			WithExec([]string{"/go/bin/govulncheck", "./..."})
 		out, err := c.Stdout(ctx)
 		r.Output += out
 		if err != nil {
-			r.Fail(fmt.Errorf("govulncheck: %w", err))
-			return r
+			failExec(&r, "govulncheck", err)
 		}
 	}
 
@@ -34,12 +38,14 @@ func Scan(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagg
 				"trivy", "fs",
 				"--severity", severityChain(cfg.Scan.FailOn),
 				"--exit-code", "1",
+				// pipeline/ is this build tool's own module; it never ships.
+				"--skip-dirs", "pipeline",
 				".",
 			})
 		out, err := trivy.Stdout(ctx)
-		r.Output += "\n" + out
+		r.Output = strings.TrimSpace(r.Output + "\n" + out)
 		if err != nil {
-			r.Fail(fmt.Errorf("trivy: %w", err))
+			failExec(&r, "trivy", err)
 		}
 	}
 	return r

@@ -216,10 +216,13 @@ func notifyFail(ctx context.Context, tg *telegram.Client, cfg *config.Config, re
 			failed = append(failed, fmt.Sprintf("%s (%s)", s.Name, s.Error))
 		}
 	}
-	_ = tg.Notify(ctx,
+	err := tg.Notify(ctx,
 		fmt.Sprintf("❌ Pipeline '%s' %s@%s failed at: %s",
 			rep.Pipeline, rep.Service, rep.Version, strings.Join(failed, ", ")),
 		cfg.Service)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: telegram notify: %v\n", err)
+	}
 }
 
 func gitDescribe(dir string) string {

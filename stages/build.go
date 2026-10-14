@@ -22,7 +22,15 @@ func Build(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 	src *dagger.Directory, version string) (br BuildResult) {
 
 	br = BuildResult{StageResult: report.NewStage("build")}
-	defer br.Finish()
+	defer func() {
+		if br.ImageRef != "" {
+			br.Metrics = map[string]any{"image_ref": br.ImageRef}
+			if br.Digest != "" {
+				br.Metrics["digest"] = br.Digest
+			}
+		}
+		br.Finish()
+	}()
 
 	ldflags := strings.TrimSpace(cfg.Build.LDFlags + fmt.Sprintf(" -X main.version=%s -X main.builtAt=%s",
 		version, time.Now().UTC().Format(time.RFC3339)))
@@ -62,7 +70,7 @@ func Build(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 			cfg.Build.Image, version)
 		digest, err := image.Publish(ctx, ref)
 		if err != nil {
-			br.Fail(fmt.Errorf("publish: %w", err))
+			failExec(&br.StageResult, "publish", err)
 			return br
 		}
 		br.ImageRef = ref
@@ -70,7 +78,7 @@ func Build(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 	} else {
 		_, err := image.AsTarball().Export(ctx, "./dist/image.tar")
 		if err != nil {
-			br.Fail(fmt.Errorf("export: %w", err))
+			failExec(&br.StageResult, "export", err)
 			return br
 		}
 		br.ImageRef = "local://" + cfg.Service + ":" + version

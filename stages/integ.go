@@ -44,7 +44,7 @@ func Integration(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 	out, err := runner.Stdout(ctx)
 	r.Output = out
 	if err != nil {
-		r.Fail(fmt.Errorf("integration: %w", err))
+		failExec(&r, "integration", err)
 	}
 	return r
 }

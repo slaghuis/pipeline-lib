@@ -6,11 +6,14 @@ package stages
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"dagger.io/dagger"
 
 	"github.com/slaghuis/pipeline-lib/config"
+	"github.com/slaghuis/pipeline-lib/report"
 )
 
 // Base returns a Go container with the module and dependencies cached.
@@ -29,6 +32,25 @@ func Base(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagg
 		WithWorkdir("/src").
 		WithMountedDirectory("/src", src).
 		WithExec([]string{"go", "mod", "download"})
+}
+
+// failExec records err on r. For a failed container command it keeps the error
+// to one line and moves the command's stdout/stderr into r.Output, so the JSON
+// report stays readable instead of embedding Dagger's query chain.
+func failExec(r *report.StageResult, label string, err error) {
+	var ee *dagger.ExecError
+	if !errors.As(err, &ee) {
+		r.Fail(fmt.Errorf("%s: %w", label, err))
+		return
+	}
+	var parts []string
+	for _, s := range []string{r.Output, ee.Stdout, ee.Stderr} {
+		if s = strings.TrimSpace(s); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	r.Output = strings.Join(parts, "\n")
+	r.Fail(fmt.Errorf("%s: %q exited with code %d", label, strings.Join(ee.Cmd, " "), ee.ExitCode))
 }
 
 // Source returns the project directory with sensible exclusions.

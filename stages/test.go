@@ -40,7 +40,7 @@ func Test(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagg
 	out, err := runner.Stdout(ctx)
 	r.Output = out
 	if err != nil {
-		r.Fail(fmt.Errorf("go test: %w", err))
+		failExec(&r, "go test", err)
 		return r
 	}
 

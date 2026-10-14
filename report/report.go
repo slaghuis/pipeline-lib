@@ -2,8 +2,10 @@ package report
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -20,9 +22,10 @@ type StageResult struct {
 	errObj error
 }
 
+// Fail marks the stage as failed. Calling it again keeps earlier errors.
 func (r *StageResult) Fail(err error) {
-	r.errObj = err
-	r.Error = err.Error()
+	r.errObj = errors.Join(r.errObj, err)
+	r.Error = strings.ReplaceAll(r.errObj.Error(), "\n", "; ")
 }
 
 func (r *StageResult) Finish() {

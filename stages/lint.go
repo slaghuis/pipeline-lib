@@ -35,14 +35,13 @@ func Lint(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagg
 	out, err := linter.Stdout(ctx)
 	r.Output = out
 	if err != nil {
-		r.Fail(fmt.Errorf("golangci-lint: %w", err))
+		failExec(&r, "golangci-lint", err)
 		return r
 	}
 
 	vet := Base(ctx, dag, cfg, src).WithExec([]string{"go", "vet", "./..."})
-	if vetOut, err := vet.Stdout(ctx); err != nil {
-		r.Fail(fmt.Errorf("go vet: %w", err))
-		r.Output += "\n" + vetOut
+	if _, err := vet.Stdout(ctx); err != nil {
+		failExec(&r, "go vet", err)
 	}
 	return r
 }

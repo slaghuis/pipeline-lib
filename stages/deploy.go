@@ -88,7 +88,7 @@ func Deploy(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 	out, err := kube.Stdout(ctx)
 	r.Output = out
 	if err != nil {
-		r.Fail(fmt.Errorf("kubectl: %w", err))
+		failExec(&r, "kubectl", err)
 		return r
 	}
 
