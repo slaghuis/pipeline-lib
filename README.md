@@ -286,6 +286,32 @@ cd ..
 ./bin/pipeline release -env staging
 ```
 
+ ### Part 6 Go Workspaces (monorepos)
+A repo whose root has a `go.work` and no `go.mod` runs in **workspace mode**: one `pipeline.yaml`, one `bin/pipeline` and one registry entry cover every module in the workspace. Set `workspace: true` or `workspace: false` to override the detection.
+
+| Stage | Single module | Workspace mode |
+| ----- | ------------- | -------------- |
+| lint  | `golangci-lint run ./...`, `go vet ./...` | `golangci-lint` in each module directory; `go vet` once over every module |
+| test  | `go test ./...` | `go test` once over every module; one merged coverage profile for `coverage_min` |
+| scan  | `govulncheck ./...`, `trivy fs .` | `govulncheck` in each module directory; `trivy fs .` unchanged |
+| build | one image from `main_package` | one image per entry in `build.targets` |
+| deploy | `kubectl set image deployment/<service>` | the same for every image built, behind a single approval |
+
+- **Modules** are exactly the `use` entries of `go.work`. Modules outside the repo root are rejected, since only the root is mounted. Keep the pipeline module itself out of `go.work` and build it with `GOWORK=off`.
+- **Go version** is the highest `go` directive across `go.work` and its modules.
+- **Build targets** come from `build.targets`. If that is empty, every directory matching `services/*/cmd/*` becomes a target named after the directory. `main_package` is ignored. With no targets, the build stage is skipped.
+- **Images** are `<registry>/<target>:<version>`, or `dist/<target>.tar` with no registry.
+- **Report**: stage names are unchanged. Per-module and per-target results are under each stage's `metrics` (`golangci_lint`, `go_test`, `govulncheck`, `targets`, `images`), and the stage error names the failed modules.
+
+```
+service: yc-platform
+
+build:
+  registry: ${REGISTRY}        # e.g. ghcr.io/slaghuis/yc-platform
+  targets:                     # optional; default discovers services/*/cmd/*
+    - name: yc-identity        # main_package defaults to ./services/<name>/cmd/<name>
+```
+
 
 
  ## Service Registry — How Pipeline-MCP Finds Services

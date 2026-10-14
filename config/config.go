@@ -15,6 +15,15 @@ type Config struct {
 	Service     string `yaml:"service"`
 	MainPackage string `yaml:"main_package"`
 	GoVersion   string `yaml:"go_version"`
+	// Workspace forces workspace mode on or off. Unset means: on when the
+	// root has a go.work and no go.mod.
+	Workspace *bool `yaml:"workspace"`
+
+	// Modules lists the go.work modules; filled by ResolveWorkspace and
+	// empty in single-module mode.
+	Modules   []Module `yaml:"-"`
+	workspace bool
+	workGo    string
 
 	Lint struct {
 		GolangCILintVersion string   `yaml:"golangci_lint_version"`
@@ -43,6 +52,9 @@ type Config struct {
 		Platforms []string          `yaml:"platforms"`
 		LDFlags   string            `yaml:"ldflags"`
 		BuildArgs map[string]string `yaml:"build_args"`
+		// Targets are the binaries and images built in workspace mode.
+		// Empty means discover DefaultTargetGlob.
+		Targets []Target `yaml:"targets"`
 	} `yaml:"build"`
 
 	Integration struct {
@@ -125,9 +137,29 @@ func applyDefaults(c *Config) {
 	if c.Build.Image == "" {
 		c.Build.Image = c.Service
 	}
-	if c.Integration.TestCommand == "" {
-		c.Integration.TestCommand = "go test -tags integration ./..."
+}
+
+// GoPackages returns the package patterns the Go toolchain stages run over:
+// every workspace module in workspace mode, "./..." otherwise. Relative
+// wildcards such as "./..." do not cross module boundaries in a workspace.
+func (c *Config) GoPackages() []string {
+	if !c.workspace {
+		return []string{"./..."}
 	}
+	pkgs := make([]string, len(c.Modules))
+	for i, m := range c.Modules {
+		pkgs[i] = m.Path + "/..."
+	}
+	return pkgs
+}
+
+// IntegrationCommand returns integration.test_command split into argv, or
+// the default integration test run over GoPackages.
+func (c *Config) IntegrationCommand() []string {
+	if c.Integration.TestCommand != "" {
+		return strings.Fields(c.Integration.TestCommand)
+	}
+	return append([]string{"go", "test", "-tags", "integration"}, c.GoPackages()...)
 }
 
 const defaultGoVersion = "1.23"
@@ -135,13 +167,38 @@ const defaultGoVersion = "1.23"
 var goDirective = regexp.MustCompile(`(?m)^go\s+(\d+)\.(\d+)`)
 
 // ResolveGoVersion raises GoVersion to the major.minor required by the go.mod in
-// root. The official golang images set GOTOOLCHAIN=local, so an older image
-// cannot download the toolchain the module asks for and every stage fails.
+// root, or in workspace mode to the highest go directive across go.work and
+// its modules. The official golang images set GOTOOLCHAIN=local, so an older
+// image cannot download the toolchain the module asks for and every stage
+// fails. Call ResolveWorkspace first.
 // It returns the configured version when it had to be raised, "" otherwise.
 func (c *Config) ResolveGoVersion(root string) (raisedFrom string, err error) {
 	configured := c.GoVersion
 	if c.GoVersion == "" {
 		c.GoVersion = defaultGoVersion
+	}
+	required, err := c.requiredGoVersion(root)
+	if err != nil || required == "" {
+		return "", err
+	}
+	if configured == "" || versionLess(configured, required) {
+		c.GoVersion = required
+		if configured != "" {
+			return configured, nil
+		}
+	}
+	return "", nil
+}
+
+func (c *Config) requiredGoVersion(root string) (string, error) {
+	if c.workspace {
+		required := majorMinorString(c.workGo)
+		for _, m := range c.Modules {
+			if v := majorMinorString(m.Go); v != "" && (required == "" || versionLess(required, v)) {
+				required = v
+			}
+		}
+		return required, nil
 	}
 	b, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
@@ -151,14 +208,17 @@ func (c *Config) ResolveGoVersion(root string) (raisedFrom string, err error) {
 	if m == nil {
 		return "", nil
 	}
-	required := string(m[1]) + "." + string(m[2])
-	if configured == "" || versionLess(configured, required) {
-		c.GoVersion = required
-		if configured != "" {
-			return configured, nil
-		}
+	return string(m[1]) + "." + string(m[2]), nil
+}
+
+// majorMinorString trims a Go version such as "1.22.3" to "1.22"; it returns
+// "" when v has no minor part.
+func majorMinorString(v string) string {
+	parts := strings.SplitN(strings.TrimPrefix(v, "go"), ".", 3)
+	if len(parts) < 2 {
+		return ""
 	}
-	return "", nil
+	return parts[0] + "." + parts[1]
 }
 
 // versionLess compares the major.minor parts of two Go versions.

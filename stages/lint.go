@@ -23,20 +23,23 @@ func Lint(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagg
 		WithExec([]string{"apk", "add", "--no-cache", "wget"}).
 		WithEnvVariable("GOLANGCI_LINT_VERSION", strings.TrimPrefix(cfg.Lint.GolangCILintVersion, "v")).
 		WithExec([]string{"sh", "-c", installGolangCILint}).
-		WithExec([]string{
-			"golangci-lint", "run",
-			"--timeout", cfg.Lint.Timeout,
-			"./...",
-		})
+		WithMountedCache("/root/.cache/golangci-lint", dag.CacheVolume("golangci-lint-"+cfg.Service))
+	lintCmd := []string{"golangci-lint", "run", "--timeout", cfg.Lint.Timeout, "./..."}
 
-	out, err := linter.Stdout(ctx)
-	r.Output = out
-	if err != nil {
-		failExec(&r, "golangci-lint", err)
-		return r
+	if cfg.IsWorkspace() {
+		// golangci-lint's ./... stops at module boundaries, so run it per
+		// module; go.work stays active and resolves sibling modules.
+		inModules(ctx, &r, cfg, linter, "golangci_lint", lintCmd)
+	} else {
+		out, err := linter.WithExec(lintCmd).Stdout(ctx)
+		r.Output = out
+		if err != nil {
+			failExec(&r, "golangci-lint", err)
+			return r
+		}
 	}
 
-	vet := Base(ctx, dag, cfg, src).WithExec([]string{"go", "vet", "./..."})
+	vet := Base(ctx, dag, cfg, src).WithExec(append([]string{"go", "vet"}, cfg.GoPackages()...))
 	if _, err := vet.Stdout(ctx); err != nil {
 		failExec(&r, "go vet", err)
 	}

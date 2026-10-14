@@ -85,6 +85,17 @@ func Run(args []string, opts ...*Options) int {
 		fmt.Fprintf(os.Stderr, "root: %v\n", err)
 		return 1
 	}
+	if err := cfg.ResolveWorkspace(rootAbs); err != nil {
+		fmt.Fprintf(os.Stderr, "workspace: %v\n", err)
+		return 1
+	}
+	if cfg.IsWorkspace() {
+		fmt.Fprintf(os.Stderr, "workspace mode: %d modules, %d build targets\n",
+			len(cfg.Modules), len(cfg.Build.Targets))
+		if cfg.MainPackage != "." {
+			fmt.Fprintf(os.Stderr, "warning: main_package is ignored in workspace mode; use build.targets\n")
+		}
+	}
 	if raisedFrom, err := cfg.ResolveGoVersion(rootAbs); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: go version: %v; using go_version %s\n", err, cfg.GoVersion)
 	} else if raisedFrom != "" {
@@ -173,7 +184,7 @@ func Run(args []string, opts ...*Options) int {
 	deploy := func() bool {
 		return stage("deploy", func() report.StageResult {
 			return stages.Deploy(ctx, dag, cfg, src, stages.DeployInput{
-				Env: *env, ImageRef: br.ImageRef, Version: *version,
+				Env: *env, ImageRef: br.ImageRef, Images: br.Images, Version: *version,
 				ChangeLog: *changeLog, Approvers: tg,
 			})
 		})

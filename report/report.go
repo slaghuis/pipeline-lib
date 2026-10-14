@@ -34,6 +34,22 @@ func (r *StageResult) Finish() {
 	}
 	r.Success = r.errObj == nil && !r.Skipped
 	r.DurationS = time.Since(r.StartedAt).Seconds()
+	r.Output = Truncate(r.Output, MaxStageOutput)
+}
+
+// MaxStageOutput caps StageResult.Output so the JSON report stays small
+// enough for an agent to read.
+const MaxStageOutput = 64 << 10
+
+// Truncate shortens s to about max bytes, keeping the first three quarters
+// and the last quarter, which hold the first error and the closing summary.
+func Truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	head, tail := max*3/4, max/4
+	return fmt.Sprintf("%s\n… [%d bytes truncated] …\n%s",
+		strings.ToValidUTF8(s[:head], ""), len(s)-head-tail, strings.ToValidUTF8(s[len(s)-tail:], ""))
 }
 
 // OK reports whether the stage passed or was intentionally skipped.

@@ -15,10 +15,19 @@ import (
 
 type DeployInput struct {
 	Env       string
-	ImageRef  string
+	ImageRef  string  // single-module mode
+	Images    []Image // workspace mode: every image built in this run
 	Version   string
 	ChangeLog string
 	Approvers *telegram.Client
+}
+
+// images returns what to deploy: one deployment per image, named after it.
+func (in DeployInput) images(cfg *config.Config) []Image {
+	if cfg.IsWorkspace() {
+		return in.Images
+	}
+	return []Image{{Name: cfg.Service, Ref: in.ImageRef}}
 }
 
 func Deploy(ctx context.Context, dag *dagger.Client, cfg *config.Config,
@@ -38,9 +47,16 @@ func Deploy(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 	if env.Namespace == "" {
 		env.Namespace = cfg.Deploy.Namespace
 	}
-	if strings.HasPrefix(in.ImageRef, "local://") {
-		r.Fail(fmt.Errorf("image %s was not pushed; set build.registry to deploy", in.ImageRef))
+	images := in.images(cfg)
+	if len(images) == 0 {
+		r.Fail(fmt.Errorf("no images were built; nothing to deploy"))
 		return r
+	}
+	for _, img := range images {
+		if strings.HasPrefix(img.Ref, "local://") {
+			r.Fail(fmt.Errorf("image %s was not pushed; set build.registry to deploy", img.Ref))
+			return r
+		}
 	}
 
 	if cfg.EnvRequiresApproval(in.Env) {
@@ -50,7 +66,7 @@ func Deploy(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 		}
 		choice, err := in.Approvers.RequestApproval(ctx,
 			fmt.Sprintf("Deploy *%s* to *%s*?", in.Version, in.Env),
-			buildContext(cfg, in),
+			buildContext(cfg, in, images),
 			cfg.Service+":"+in.Env,
 			[]string{"Deploy", "Hold", "Abort"},
 			cfg.Approval.TimeoutSeconds,
@@ -70,20 +86,18 @@ func Deploy(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 		kubeconfig = os.ExpandEnv("$HOME/.kube/config")
 	}
 
+	kubectl := func(args ...string) []string {
+		return append([]string{"kubectl", "--context", env.KubeContext, "-n", env.Namespace}, args...)
+	}
 	kube := dag.Container().From("bitnami/kubectl:1.30").
 		WithMountedFile("/root/.kube/config", dag.Host().File(kubeconfig)).
-		WithEnvVariable("KUBECONFIG", "/root/.kube/config").
-		WithExec([]string{
-			"kubectl", "--context", env.KubeContext,
-			"-n", env.Namespace,
-			"set", "image", "deployment/" + cfg.Service,
-			cfg.Service + "=" + in.ImageRef,
-		}).
-		WithExec([]string{
-			"kubectl", "--context", env.KubeContext,
-			"-n", env.Namespace,
-			"rollout", "status", "deployment/" + cfg.Service, "--timeout=300s",
-		})
+		WithEnvVariable("KUBECONFIG", "/root/.kube/config")
+	for _, img := range images {
+		kube = kube.WithExec(kubectl("set", "image", "deployment/"+img.Name, img.Name+"="+img.Ref))
+	}
+	for _, img := range images {
+		kube = kube.WithExec(kubectl("rollout", "status", "deployment/"+img.Name, "--timeout=300s"))
+	}
 
 	out, err := kube.Stdout(ctx)
 	r.Output = out
@@ -100,11 +114,18 @@ func Deploy(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 	return r
 }
 
-func buildContext(cfg *config.Config, in DeployInput) string {
+func buildContext(cfg *config.Config, in DeployInput, images []Image) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "service:  %s\n", cfg.Service)
 	fmt.Fprintf(&b, "env:      %s\n", in.Env)
-	fmt.Fprintf(&b, "image:    %s\n", in.ImageRef)
+	if len(images) == 1 {
+		fmt.Fprintf(&b, "image:    %s\n", images[0].Ref)
+	} else {
+		fmt.Fprintf(&b, "images:   %d\n", len(images))
+		for _, img := range images {
+			fmt.Fprintf(&b, "  %s\n", img.Ref)
+		}
+	}
 	fmt.Fprintf(&b, "version:  %s\n", in.Version)
 	if in.ChangeLog != "" {
 		fmt.Fprintf(&b, "\n--- changes ---\n%s", in.ChangeLog)

@@ -5,7 +5,6 @@ package stages
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"dagger.io/dagger"
 
@@ -23,7 +22,7 @@ func Integration(ctx context.Context, dag *dagger.Client, cfg *config.Config,
 		r.Skipped = true
 		return r
 	}
-	cmd := strings.Fields(cfg.Integration.TestCommand)
+	cmd := cfg.IntegrationCommand()
 	if len(cmd) == 0 {
 		r.Fail(fmt.Errorf("integration.test_command is empty"))
 		return r

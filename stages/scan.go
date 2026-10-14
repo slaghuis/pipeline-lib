@@ -21,12 +21,16 @@ func Scan(ctx context.Context, dag *dagger.Client, cfg *config.Config, src *dagg
 		c := Base(ctx, dag, cfg, src).
 			WithEnvVariable("GOTOOLCHAIN", "auto").
 			WithExec([]string{"go", "install", "golang.org/x/vuln/cmd/govulncheck@latest"}).
-			WithEnvVariable("GOTOOLCHAIN", "local").
-			WithExec([]string{"/go/bin/govulncheck", "./..."})
-		out, err := c.Stdout(ctx)
-		r.Output += out
-		if err != nil {
-			failExec(&r, "govulncheck", err)
+			WithEnvVariable("GOTOOLCHAIN", "local")
+		vulnCmd := []string{"/go/bin/govulncheck", "./..."}
+		if cfg.IsWorkspace() {
+			inModules(ctx, &r, cfg, c, "govulncheck", vulnCmd)
+		} else {
+			out, err := c.WithExec(vulnCmd).Stdout(ctx)
+			r.Output += out
+			if err != nil {
+				failExec(&r, "govulncheck", err)
+			}
 		}
 	}
 
