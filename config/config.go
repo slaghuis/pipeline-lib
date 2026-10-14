@@ -105,7 +105,7 @@ func applyDefaults(c *Config) {
 		c.MainPackage = "."
 	}
 	if c.Lint.GolangCILintVersion == "" {
-		c.Lint.GolangCILintVersion = "v2.5.0"
+		c.Lint.GolangCILintVersion = "v2.14.0"
 	}
 	if c.Lint.Timeout == "" {
 		c.Lint.Timeout = "5m"
